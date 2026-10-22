@@ -1,0 +1,219 @@
+# ---------------------------------------------------------------------------
+# AI Clinic Operations Assistant — local development stack
+#
+#   docker compose up --build
+#
+# Services:
+#   postgres      — the database (row-level security enabled)
+#   redis         — cache, Celery broker and result backend
+#   backend       — Django API on :8000
+#   celery-worker — background workers
+#   celery-beat   — the scheduler
+#   frontend      — Next.js dashboard on :3000
+# ---------------------------------------------------------------------------
+name: clinic-ops
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: clinic-postgres
+    environment:
+      POSTGRES_DB: ${DB_NAME:-clinic}
+      POSTGRES_USER: ${DB_USER:-clinic_app}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-clinic_app}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-clinic_app} -d ${DB_NAME:-clinic}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [clinic]
+
+  redis:
+    image: redis:7-alpine
+    container_name: clinic-redis
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [clinic]
+
+  backend:
+    build:
+      context: ./backend
+      target: development
+    container_name: clinic-backend
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DJANGO_DEBUG: "1"
+      DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1,backend"
+      DJANGO_LOG_LEVEL: "DEBUG"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-insecure-dev-secret-key-change-me}
+      DB_NAME: ${DB_NAME:-clinic}
+      DB_USER: ${DB_USER:-clinic_app}
+      DB_PASSWORD: ${DB_PASSWORD:-clinic_app}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      CORS_ALLOWED_ORIGINS: '["http://localhost:3000","http://127.0.0.1:3000"]'
+      INTERNAL_SERVICE_TOKEN_PEPPER: ${INTERNAL_SERVICE_TOKEN_PEPPER:-change-me}
+      SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:-}
+      SARVAM_BASE_URL: ${SARVAM_BASE_URL:-https://api.sarvam.ai}
+      SARVAM_API_KEY: ${SARVAM_API_KEY:-}
+      SARVAM_VOICE_AGENT_ID: ${SARVAM_VOICE_AGENT_ID:-}
+      SARVAM_WEBHOOK_SECRET: ${SARVAM_WEBHOOK_SECRET:-}
+      WHATSAPP_GRAPH_URL: ${WHATSAPP_GRAPH_URL:-https://graph.facebook.com/v21.0}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
+      TELEPHONY_BASE_URL: ${TELEPHONY_BASE_URL:-}
+      TELEPHONY_AUTH_TOKEN: ${TELEPHONY_AUTH_TOKEN:-}
+      TELEPHONY_PROVIDER: ${TELEPHONY_PROVIDER:-stub}
+    volumes:
+      - ./backend:/app
+      - ./backend/staticfiles:/app/staticfiles
+      - ./backend/media:/app/media
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [clinic]
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py runserver 0.0.0.0:8000"
+
+  celery-worker:
+    build:
+      context: ./backend
+      target: development
+    container_name: clinic-celery-worker
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DJANGO_DEBUG: "1"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-insecure-dev-secret-key-change-me}
+      DB_NAME: ${DB_NAME:-clinic}
+      DB_USER: ${DB_USER:-clinic_app}
+      DB_PASSWORD: ${DB_PASSWORD:-clinic_app}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      INTERNAL_SERVICE_TOKEN_PEPPER: ${INTERNAL_SERVICE_TOKEN_PEPPER:-change-me}
+      SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:-}
+      SARVAM_BASE_URL: ${SARVAM_BASE_URL:-https://api.sarvam.ai}
+      SARVAM_API_KEY: ${SARVAM_API_KEY:-}
+      SARVAM_VOICE_AGENT_ID: ${SARVAM_VOICE_AGENT_ID:-}
+      SARVAM_WEBHOOK_SECRET: ${SARVAM_WEBHOOK_SECRET:-}
+      WHATSAPP_GRAPH_URL: ${WHATSAPP_GRAPH_URL:-https://graph.facebook.com/v21.0}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
+      TELEPHONY_BASE_URL: ${TELEPHONY_BASE_URL:-}
+      TELEPHONY_AUTH_TOKEN: ${TELEPHONY_AUTH_TOKEN:-}
+      TELEPHONY_PROVIDER: ${TELEPHONY_PROVIDER:-stub}
+    volumes:
+      - ./backend:/app
+      - ./backend/media:/app/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [clinic]
+    command: >
+      sh -c "celery -A config worker -l INFO --concurrency=2"
+
+  celery-beat:
+    build:
+      context: ./backend
+      target: development
+    container_name: clinic-celery-beat
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DJANGO_DEBUG: "1"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-insecure-dev-secret-key-change-me}
+      DB_NAME: ${DB_NAME:-clinic}
+      DB_USER: ${DB_USER:-clinic_app}
+      DB_PASSWORD: ${DB_PASSWORD:-clinic_app}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      INTERNAL_SERVICE_TOKEN_PEPPER: ${INTERNAL_SERVICE_TOKEN_PEPPER:-change-me}
+      SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:-}
+      SARVAM_BASE_URL: ${SARVAM_BASE_URL:-https://api.sarvam.ai}
+      SARVAM_API_KEY: ${SARVAM_API_KEY:-}
+      SARVAM_VOICE_AGENT_ID: ${SARVAM_VOICE_AGENT_ID:-}
+      SARVAM_WEBHOOK_SECRET: ${SARVAM_WEBHOOK_SECRET:-}
+      WHATSAPP_GRAPH_URL: ${WHATSAPP_GRAPH_URL:-https://graph.facebook.com/v21.0}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
+      TELEPHONY_BASE_URL: ${TELEPHONY_BASE_URL:-}
+      TELEPHONY_AUTH_TOKEN: ${TELEPHONY_AUTH_TOKEN:-}
+      TELEPHONY_PROVIDER: ${TELEPHONY_PROVIDER:-stub}
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [clinic]
+    command: >
+      sh -c "celery -A config beat -l INFO --schedule=/tmp/celerybeat-schedule"
+
+  frontend:
+    build:
+      context: ./frontend
+      target: development
+    container_name: clinic-frontend
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000/api/v1
+      NEXT_TELEMETRY_DISABLED: "1"
+    volumes:
+      - ./frontend:/app
+      # pnpm's virtual store has to survive the bind mount, otherwise the
+      # symlinks in node_modules point at nothing.
+      - /app/node_modules
+      - /app/node_modules/.pnpm
+      - /app/.next-dev
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks: [clinic]
+    command: pnpm run dev
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  clinic:
+    driver: bridge

@@ -1,0 +1,288 @@
+# ---------------------------------------------------------------------------
+# Production overrides
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Differences from the dev stack:
+#   * no source bind-mounts — the image is the artifact
+#   * no host port exposure except through nginx
+#   * redis requires a password
+#   * resource limits and restart policies are set
+#   * migrations run as a one-shot job before the services start
+# ---------------------------------------------------------------------------
+name: clinic-ops
+
+services:
+  postgres:
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:?set DB_NAME}
+      POSTGRES_USER: ${DB_USER:?set DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./ops/postgres-backup:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+
+  redis:
+    restart: unless-stopped
+    command: >-
+      redis-server --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 640M
+
+  # One-shot job: applies migrations, then exits. Everything else waits for it.
+  migrate:
+    build:
+      context: ./backend
+      target: production
+    command: python manage.py migrate --noinput
+    environment:
+      DJANGO_DEBUG: "0"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set DJANGO_SECRET_KEY}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:?set DJANGO_ALLOWED_HOSTS}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
+      INTERNAL_SERVICE_TOKEN_PEPPER: ${INTERNAL_SERVICE_TOKEN_PEPPER:?set INTERNAL_SERVICE_TOKEN_PEPPER}
+      SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:?set SECRET_ENCRYPTION_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks: [clinic]
+
+  backend:
+    build:
+      context: ./backend
+      target: production
+    restart: unless-stopped
+    environment:
+      DJANGO_DEBUG: "0"
+      DJANGO_LOG_LEVEL: ${DJANGO_LOG_LEVEL:-INFO}
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?set CORS_ALLOWED_ORIGINS}
+      INTERNAL_SERVICE_TOKEN_PEPPER: ${INTERNAL_SERVICE_TOKEN_PEPPER}
+      SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:?set SECRET_ENCRYPTION_KEY}
+      SARVAM_BASE_URL: ${SARVAM_BASE_URL:-https://api.sarvam.ai}
+      SARVAM_API_KEY: ${SARVAM_API_KEY:-}
+      SARVAM_VOICE_AGENT_ID: ${SARVAM_VOICE_AGENT_ID:-}
+      SARVAM_WEBHOOK_SECRET: ${SARVAM_WEBHOOK_SECRET:-}
+      WHATSAPP_GRAPH_URL: ${WHATSAPP_GRAPH_URL:-https://graph.facebook.com/v21.0}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
+      TELEPHONY_BASE_URL: ${TELEPHONY_BASE_URL:-}
+      TELEPHONY_AUTH_TOKEN: ${TELEPHONY_AUTH_TOKEN:-}
+      TELEPHONY_PROVIDER: ${TELEPHONY_PROVIDER:-stub}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks: [clinic]
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+
+  celery-worker:
+    build:
+      context: ./backend
+      target: production
+    restart: unless-stopped
+    environment:
+      DJANGO_DEBUG: "0"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
+      INTERNAL_SERVICE_TOKEN_PEPPER: ${INTERNAL_SERVICE_TOKEN_PEPPER}
+      SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:?set SECRET_ENCRYPTION_KEY}
+      SARVAM_BASE_URL: ${SARVAM_BASE_URL:-https://api.sarvam.ai}
+      SARVAM_API_KEY: ${SARVAM_API_KEY:-}
+      SARVAM_VOICE_AGENT_ID: ${SARVAM_VOICE_AGENT_ID:-}
+      SARVAM_WEBHOOK_SECRET: ${SARVAM_WEBHOOK_SECRET:-}
+      WHATSAPP_GRAPH_URL: ${WHATSAPP_GRAPH_URL:-https://graph.facebook.com/v21.0}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
+      TELEPHONY_BASE_URL: ${TELEPHONY_BASE_URL:-}
+      TELEPHONY_AUTH_TOKEN: ${TELEPHONY_AUTH_TOKEN:-}
+      TELEPHONY_PROVIDER: ${TELEPHONY_PROVIDER:-stub}
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks: [clinic]
+    command: celery -A config worker -l INFO --concurrency=4 --max-tasks-per-child=500
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+
+  celery-beat:
+    build:
+      context: ./backend
+      target: production
+    restart: unless-stopped
+    environment:
+      DJANGO_DEBUG: "0"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
+      INTERNAL_SERVICE_TOKEN_PEPPER: ${INTERNAL_SERVICE_TOKEN_PEPPER}
+      SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:?set SECRET_ENCRYPTION_KEY}
+      SARVAM_BASE_URL: ${SARVAM_BASE_URL:-https://api.sarvam.ai}
+      SARVAM_API_KEY: ${SARVAM_API_KEY:-}
+      SARVAM_VOICE_AGENT_ID: ${SARVAM_VOICE_AGENT_ID:-}
+      SARVAM_WEBHOOK_SECRET: ${SARVAM_WEBHOOK_SECRET:-}
+      WHATSAPP_GRAPH_URL: ${WHATSAPP_GRAPH_URL:-https://graph.facebook.com/v21.0}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
+      TELEPHONY_BASE_URL: ${TELEPHONY_BASE_URL:-}
+      TELEPHONY_AUTH_TOKEN: ${TELEPHONY_AUTH_TOKEN:-}
+      TELEPHONY_PROVIDER: ${TELEPHONY_PROVIDER:-stub}
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks: [clinic]
+    command: celery -A config beat -l INFO --schedule=/tmp/celerybeat-schedule
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+
+  frontend:
+    build:
+      context: ./frontend
+      target: runner
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:?set NEXT_PUBLIC_API_BASE_URL}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL}
+    depends_on:
+      backend:
+        condition: service_started
+    networks: [clinic]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./ops/certs:/etc/letsencrypt:ro
+      - ./ops/certbot-webroot:/var/www/certbot:ro
+    depends_on:
+      - frontend
+      - backend
+    networks: [clinic]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+
+  certbot:
+    image: certbot/certbot:latest
+    restart: unless-stopped
+    volumes:
+      - ./ops/certs:/etc/letsencrypt
+      - ./ops/certbot-webroot:/var/www/certbot
+    entrypoint: >-
+      /bin/sh -c "trap exit TERM;
+      while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done;"
+    networks: [clinic]
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  clinic:
+    driver: bridge

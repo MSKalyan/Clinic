@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Django
+*.sqlite3
+/backend/media/
+/backend/staticfiles/
+
+# Node
+node_modules/
+/frontend/.next/
+/frontend/.next-dev/
+/frontend/out/
+npm-debug.log*
+yarn-error.log*
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Docker / ops
+/ops/certs/
+/ops/certbot-webroot/
+/ops/postgres-backup/
+celerybeat-schedule*
+*.sqlite3-journal
+
+# Test artefacts
+/frontend/coverage/
+/frontend/playwright-report/
+/frontend/test-results/
+
