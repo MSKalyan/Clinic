@@ -1,0 +1,49 @@
+# Frontend .dockerignore
+
+# Version control
+.git
+.gitignore
+
+# Node
+node_modules
+.pnpm-store
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm
+
+# Next.js
+.next
+.next-dev
+out
+next-env.d.ts
+.vercel
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Testing
+coverage
+playwright-report
+test-results
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Docs
+*.md
+docs/
