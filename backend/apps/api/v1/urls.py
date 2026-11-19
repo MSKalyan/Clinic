@@ -11,15 +11,19 @@ from apps.api.v1.views.conversations import CallLogViewSet, ConversationViewSet
 from apps.api.v1.views.dashboard import DashboardSummaryView
 from apps.api.v1.views.doctors import DoctorViewSet
 from apps.api.v1.views.followups import FollowUpTaskViewSet
+from apps.api.v1.views.health import LivenessView, ReadinessView
 from apps.api.v1.views.patients import PatientViewSet
 from apps.api.v1.views.tools import ToolInvokeView, ToolListView
+from apps.api.v1.views.waha import (
+    WahaSendMessageView,
+    WahaStatusView,
+    WahaWebhookView,
+)
 from apps.api.v1.views.webhooks import (
     TelephonyWebhookView,
     VoiceWebhookView,
     WhatsAppWebhookView,
 )
-
-from apps.api.v1.views.health import LivenessView, ReadinessView
 
 router = DefaultRouter()
 router.register("clinics", ClinicViewSet, basename="clinic")
@@ -59,4 +63,8 @@ urlpatterns = [
     ),
     path("webhooks/whatsapp/<str:provider>/", WhatsAppWebhookView.as_view(), name="webhook-whatsapp"),
     path("webhooks/telephony/<str:provider>/", TelephonyWebhookView.as_view(), name="webhook-telephony"),
+    # -- WAHA (self-hosted WhatsApp HTTP API) ---------------------------
+    path("webhooks/waha/", WahaWebhookView.as_view(), name="webhook-waha"),
+    path("integrations/waha/messages/", WahaSendMessageView.as_view(), name="waha-send"),
+    path("integrations/waha/status/", WahaStatusView.as_view(), name="waha-status"),
 ]

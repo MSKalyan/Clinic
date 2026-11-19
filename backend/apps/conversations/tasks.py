@@ -20,6 +20,8 @@ from celery import shared_task
 from django.db.models import Q
 from django.utils import timezone
 
+from apps.conversations.models import CallLog, Conversation, FollowUpTask
+from apps.conversations.services.followups import FollowUpService
 from apps.core.constants import (
     CallOutcome,
     Channel,
@@ -29,8 +31,6 @@ from apps.core.constants import (
     TaskPriority,
 )
 from apps.core.models import OutboxEvent
-from apps.conversations.models import CallLog, Conversation
-from apps.conversations.services.followups import FollowUpService
 
 logger = logging.getLogger("apps.conversations.tasks")
 
@@ -100,7 +100,6 @@ def scan_unresolved_calls(
     The sweep runs one tenant at a time so that a task can never be raised
     against another clinic's conversation.
     """
-    from apps.conversations.models import FollowUpTask
     from apps.core.rls import iter_clinic_scopes
 
     now = timezone.now()
@@ -215,3 +214,82 @@ def scan_unresolved_calls(
         skipped,
     )
     return {"inspected": inspected, "created": created, "skipped": skipped}
+
+
+# ---------------------------------------------------------------------------
+# Outbound delivery
+# ---------------------------------------------------------------------------
+@shared_task(
+    name="apps.conversations.tasks.dispatch_notification",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=5,
+)
+def dispatch_notification(self, log_id: str, body: str, payload: dict | None = None) -> str:
+    """Perform the provider call for one queued notification.
+
+    The row was written in the request, so this task is safe to retry: the
+    idempotency key prevents a duplicate row and a completed send is a no-op.
+    """
+    from django.conf import settings
+
+    from apps.conversations.models import NotificationLog
+    from apps.conversations.services.messages import record_outbound
+    from apps.conversations.services.notifications import NotificationService
+    from apps.core.constants import DeliveryStatus
+    from apps.core.rls import rls_scope
+
+    try:
+        log = NotificationLog.objects.select_related(
+            "clinic", "patient", "appointment"
+        ).get(pk=log_id)
+    except NotificationLog.DoesNotExist:  # pragma: no cover - deleted record
+        return "missing"
+
+    if not getattr(settings, "AUTOMATED_MESSAGING_ENABLED", True):
+        return "paused"
+
+    if log.delivery_status in {DeliveryStatus.SENT, DeliveryStatus.DELIVERED}:
+        return "already-sent"
+
+    with rls_scope(str(log.clinic_id)):
+        try:
+            if log.patient_id is None and payload and payload.get("chat_id"):
+                # A staff reply to an unlinked WhatsApp chat has no patient row.
+                from apps.integrations.services.waha import send_text_message
+
+                result = send_text_message(payload["chat_id"], body)
+                if not result.ok:
+                    raise RuntimeError(result.error or "WAHA could not send the message.")
+                message_id = str((result.data or {}).get("id") or "")
+            else:
+                message_id = NotificationService.dispatch(
+                    clinic=log.clinic,
+                    patient=log.patient,
+                    channel=log.channel,
+                    template_id=log.template_id,
+                    body=body,
+                    appointment=log.appointment,
+                    payload=payload or {},
+                )
+        except Exception as exc:
+            logger.warning("notification %s dispatch failed: %s", log_id, exc)
+            if self.request.retries < self.max_retries:
+                raise self.retry(exc=exc) from exc
+            NotificationService.mark_failed(log, exc)
+            return "failed"
+
+        # Provider ids are not guaranteed to be short (some gateways return a
+        # long composite token). The log column is varchar(200); truncating the
+        # id must never turn a successful send into a DataError.
+        log.provider_message_id = str(message_id)[:200]
+        log.delivery_status = DeliveryStatus.SENT
+        log.sent_at = timezone.now()
+        log.save(update_fields=["provider_message_id", "delivery_status", "sent_at"])
+
+        if log.patient_id:
+            try:
+                record_outbound(log.clinic, log.patient, body, message_id)
+            except Exception:  # pragma: no cover - must not undo a sent message
+                logger.exception("could not record outbound turn for %s", log_id)
+        return "sent"

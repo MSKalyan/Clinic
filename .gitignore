@@ -36,6 +36,10 @@ yarn-error.log*
 .vscode/
 *.swp
 
+# Vendored WAHA runtime data (sessions/media are created at runtime)
+/waha/media/
+/waha/sessions/
+
 # Docker / ops
 /ops/certs/
 /ops/certbot-webroot/

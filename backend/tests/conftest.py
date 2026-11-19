@@ -21,6 +21,17 @@ import pytest
 from django.utils import timezone
 
 
+@pytest.fixture(autouse=True)
+def _inline_message_delivery(settings):
+    """Keep outbound delivery deterministic in tests.
+
+    Production queues provider calls to Celery. Running them inline here makes
+    the whole suite assert on real provider results without a worker, and keeps
+    the tests independent of ``transaction.on_commit`` timing.
+    """
+    settings.MESSAGES_ASYNC = False
+
+
 # ---------------------------------------------------------------------------
 # Clinics
 # ---------------------------------------------------------------------------

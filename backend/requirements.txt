@@ -11,7 +11,11 @@ python-dotenv>=1.0
 whitenoise>=6.7
 gunicorn>=23.0
 django-environ>=0.11
+requests>=2.32  # outbound HTTP calls (WAHA, provider adapters)
 cryptography>=43.0  # encrypts per-clinic provider secrets
+channels>=4.2  # ASGI + WebSockets for live conversations and dashboard
+channels-redis>=4.2  # shared channel layer across workers
+daphne>=4.1  # production ASGI server (WebSockets + HTTP)
 
 # dev / test
 pytest>=8.3

@@ -67,15 +67,6 @@ ENV DJANGO_DEBUG=0 \
 # Static files are collected at build time and served by WhiteNoise.
 RUN DJANGO_SECRET_KEY=build-only python manage.py collectstatic --noinput
 
-CMD ["gunicorn", "config.wsgi:application", \
-     "--bind", "0.0.0.0:8000", \
-     "--workers", "4", \
-     "--worker-class", "gthread", \
-     "--threads", "2", \
-     "--timeout", "120", \
-     "--graceful-timeout", "30", \
-     "--keep-alive", "5", \
-     "--max-requests", "1000", \
-     "--max-requests-jitter", "100", \
-     "--access-logfile", "-", \
-     "--error-logfile", "-"]
+# Daphne serves both HTTP and the WebSocket endpoint from config.asgi.
+CMD ["daphne", "-b", "0.0.0.0", "-p", "8000", \
+     "--access-log", "-", "config.asgi:application"]

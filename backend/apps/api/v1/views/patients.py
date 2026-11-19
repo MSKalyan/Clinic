@@ -38,7 +38,10 @@ class PatientViewSet(TenantScopedViewSet):
         return queryset
 
     def perform_create(self, serializer) -> None:
+        from apps.appointments.services.patient_messages import queue_welcome_message
+
         patient = serializer.save(clinic=self.get_clinic())
+        queue_welcome_message(patient)
         record_audit(
             action=AuditAction.CREATE,
             resource_type="patient",

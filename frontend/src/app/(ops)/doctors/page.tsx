@@ -3,10 +3,11 @@
 /**
  * The doctor board.
  *
- * Presence is an explicit assertion: choosing a status here records a
- * status *event* with a source and a timestamp. It never edits history --
- * the event log is append-only, so the clinic can always see who said what
- * and when.
+ * Presence is an explicit assertion: choosing a status here records a status
+ * *event* with a source and a timestamp. It never edits history -- the event
+ * log is append-only, so the clinic can always see who said what and when.
+ * Admins can also add and edit doctors; a doctor added here immediately appears
+ * in appointments and on the public booking page.
  */
 import { useCallback, useState } from "react";
 
@@ -17,6 +18,8 @@ import {
   EmptyState,
   ErrorBanner,
   Field,
+  Input,
+  Modal,
   Select,
   Spinner,
   Table,
@@ -52,11 +55,30 @@ const STATUS_LABELS: Record<string, string> = {
   unknown: "Unknown",
 };
 
+interface DoctorFormState {
+  name: string;
+  specialization: string;
+  phone: string;
+  languages: string;
+  sort_order: string;
+  is_active: boolean;
+}
+
+const EMPTY_FORM: DoctorFormState = {
+  name: "",
+  specialization: "",
+  phone: "",
+  languages: "",
+  sort_order: "0",
+  is_active: true,
+};
+
 interface DoctorRowProps {
   doctor: Doctor;
   availability: DoctorAvailability | null;
   timezone: string | undefined;
   canUpdate: boolean;
+  isAdmin: boolean;
   editing: boolean;
   status: DoctorStatus;
   notes: string;
@@ -66,6 +88,7 @@ interface DoctorRowProps {
   onStatusChange: (status: DoctorStatus) => void;
   onNotesChange: (notes: string) => void;
   onSubmit: () => void;
+  onEdit: () => void;
 }
 
 function DoctorRow({
@@ -73,6 +96,7 @@ function DoctorRow({
   availability,
   timezone,
   canUpdate,
+  isAdmin,
   editing,
   status,
   notes,
@@ -82,11 +106,12 @@ function DoctorRow({
   onStatusChange,
   onNotesChange,
   onSubmit,
+  onEdit,
 }: DoctorRowProps) {
   if (editing) {
     return (
       <tr>
-        <td className="px-4 py-3" colSpan={5}>
+        <td className="px-4 py-3" colSpan={6}>
           <div
             className="flex flex-wrap items-end gap-3 p-4"
             style={{
@@ -178,7 +203,140 @@ function DoctorRow({
           </span>
         )}
       </td>
+      <td className="px-4 py-3">
+        {isAdmin ? (
+          <Button variant="ghost" onClick={onEdit} aria-label={`Edit ${doctor.name}`}>
+            Edit
+          </Button>
+        ) : null}
+      </td>
     </tr>
+  );
+}
+
+function DoctorEditor({
+  doctor,
+  onClose,
+  onSaved,
+}: {
+  doctor: Doctor | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { api } = useAuth();
+  const [form, setForm] = useState<DoctorFormState>(() =>
+    doctor
+      ? {
+          name: doctor.name,
+          specialization: doctor.specialization,
+          phone: doctor.phone,
+          languages: (doctor.languages ?? []).join(", "),
+          sort_order: String(doctor.sort_order ?? 0),
+          is_active: doctor.is_active,
+        }
+      : EMPTY_FORM,
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+
+  function update(field: keyof DoctorFormState, value: string | boolean) {
+    setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  async function save() {
+    if (!form.name.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const payload = {
+        name: form.name.trim(),
+        specialization: form.specialization.trim(),
+        phone: form.phone.trim(),
+        languages: form.languages
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean),
+        sort_order: Number(form.sort_order) || 0,
+        is_active: form.is_active,
+      };
+      if (doctor) {
+        await api.patch(`/doctors/${doctor.id}/`, payload);
+      } else {
+        await api.post("/doctors/", payload);
+      }
+      onSaved();
+      onClose();
+    } catch (cause) {
+      setError(cause);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      isOpen
+      onClose={onClose}
+      title={doctor ? `Edit ${doctor.name}` : "Add a doctor"}
+      action={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={save} disabled={busy || !form.name.trim()}>
+            {busy ? "Saving…" : "Save doctor"}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        {error ? <ErrorBanner error={error} /> : null}
+        <Field label="Full name">
+          <Input value={form.name} onChange={(e) => update("name", e.target.value)} placeholder="Dr. Ada Lovelace" />
+        </Field>
+        <Field label="Specialisation">
+          <Input
+            value={form.specialization}
+            onChange={(e) => update("specialization", e.target.value)}
+            placeholder="General practice"
+          />
+        </Field>
+        <Field label="Phone">
+          <Input value={form.phone} onChange={(e) => update("phone", e.target.value)} placeholder="+91 98765 43210" />
+        </Field>
+        <Field label="Languages" hint="Comma-separated, e.g. English, Hindi">
+          <Input
+            value={form.languages}
+            onChange={(e) => update("languages", e.target.value)}
+            placeholder="English, Hindi"
+          />
+        </Field>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Sort order">
+            <Input
+              type="number"
+              value={form.sort_order}
+              onChange={(e) => update("sort_order", e.target.value)}
+            />
+          </Field>
+          <Field label="Availability">
+            <Select
+              value={form.is_active ? "active" : "inactive"}
+              onChange={(e) => update("is_active", e.target.value === "active")}
+            >
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+            </Select>
+          </Field>
+        </div>
+        {!doctor ? (
+          <p className="text-caption" style={{ color: "var(--color-text-muted)" }}>
+            The doctor will appear on the roster, in appointment booking, and on the public
+            booking page as soon as this is saved.
+          </p>
+        ) : null}
+      </div>
+    </Modal>
   );
 }
 
@@ -189,18 +347,17 @@ function StatusHistory({ timezone }: { timezone: string | undefined }) {
   const { data: roster } = useApiData<{ doctors: Paginated<Doctor> }>(async (api, signal) => {
     const doctors = await api.get<Paginated<Doctor>>("/doctors/", { signal });
     return { doctors };
-  }, activeClinicId ?? "roster");
+  }, "status-history-roster");
 
   const { data, error, loading } = useApiData<{
     current: DoctorStatusCurrent | null;
     events: DoctorStatusEvent[];
   }>(async (api, signal) => {
     if (!doctorId) return { current: null, events: [] };
-    const payload = await api.get<{
-      current: DoctorStatusCurrent | null;
-      events: DoctorStatusEvent[];
-    }>(`/doctors/${doctorId}/status-history/`, { signal });
-    return payload;
+    return api.get<{ current: DoctorStatusCurrent | null; events: DoctorStatusEvent[] }>(
+      `/doctors/${doctorId}/status-history/`,
+      { signal },
+    );
   }, doctorId);
 
   return (
@@ -277,12 +434,15 @@ export default function DoctorsPage() {
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<unknown>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editingDoctor, setEditingDoctor] = useState<Doctor | null>(null);
 
-  const { data, error, loading, reload } = useApiData<{
+  const { data, error, loading, refreshing, reload } = useApiData<{
     doctors: Paginated<Doctor>;
     availability: Record<string, DoctorAvailability>;
   }>(async (apiClient, signal) => {
     const doctors = await apiClient.get<Paginated<Doctor>>("/doctors/", { signal });
+    // Fetch availability in parallel but tolerate a provider error per doctor.
     const entries = await Promise.all(
       doctors.results.map((doctor) =>
         apiClient
@@ -295,9 +455,10 @@ export default function DoctorsPage() {
       doctors,
       availability: Object.fromEntries(entries) as Record<string, DoctorAvailability>,
     };
-  }, activeClinicId ?? "roster");
+  }, "roster");
 
   const canUpdate = role === "clinic_admin" || role === "doctor";
+  const isAdmin = role === "clinic_admin";
 
   const recordStatus = useCallback(
     async (doctorId: string) => {
@@ -322,9 +483,6 @@ export default function DoctorsPage() {
     [api, notes, reload, status],
   );
 
-  if (loading) return <Spinner label="Loading the roster…" size="lg" />;
-  if (error) return <ErrorBanner error={error} />;
-
   return (
     <div className="page">
       <header className="page-header">
@@ -335,6 +493,17 @@ export default function DoctorsPage() {
             doctor has arrived.
           </p>
         </div>
+        {isAdmin ? (
+          <Button
+            variant="primary"
+            onClick={() => {
+              setEditingDoctor(null);
+              setEditorOpen(true);
+            }}
+          >
+            Add doctor
+          </Button>
+        ) : null}
       </header>
 
       {actionError ? (
@@ -342,41 +511,65 @@ export default function DoctorsPage() {
           <ErrorBanner error={actionError} />
         </div>
       ) : null}
+      {refreshing ? (
+        <p className="text-caption" style={{ color: "var(--color-text-muted)" }}>
+          Refreshing…
+        </p>
+      ) : null}
 
       <Card title="Roster" subtitle={`${data?.doctors.count ?? 0} active doctors`}>
-        <Table
-          headers={["Doctor", "Languages", "Status", "Last confirmed", "Actions"]}
-          empty="No doctors on the roster yet."
-        >
-          {data?.doctors.results.map((doctor) => (
-            <DoctorRow
-              key={doctor.id}
-              doctor={doctor}
-              availability={data?.availability[doctor.id] ?? null}
-              timezone={timezone}
-              canUpdate={canUpdate}
-              editing={editing === doctor.id}
-              status={status}
-              notes={notes}
-              busy={busy}
-              onStart={() => {
-                setEditing(doctor.id);
-                setStatus("present");
-                setNotes("");
-              }}
-              onCancel={() => setEditing(null)}
-              onStatusChange={setStatus}
-              onNotesChange={setNotes}
-              onSubmit={() => recordStatus(doctor.id)}
-            />
-          ))}
-        </Table>
+        {loading && !data ? (
+          <Spinner label="Loading the roster…" />
+        ) : error && !data ? (
+          <ErrorBanner error={error} />
+        ) : (
+          <Table
+            headers={["Doctor", "Languages", "Status", "Last confirmed", "Actions", ""]}
+            empty="No doctors on the roster yet. Add one to make them bookable."
+          >
+            {data?.doctors.results.map((doctor) => (
+              <DoctorRow
+                key={doctor.id}
+                doctor={doctor}
+                availability={data?.availability[doctor.id] ?? null}
+                timezone={timezone}
+                canUpdate={canUpdate}
+                isAdmin={isAdmin}
+                editing={editing === doctor.id}
+                status={status}
+                notes={notes}
+                busy={busy}
+                onStart={() => {
+                  setEditing(doctor.id);
+                  setStatus("present");
+                  setNotes("");
+                }}
+                onCancel={() => setEditing(null)}
+                onStatusChange={setStatus}
+                onNotesChange={setNotes}
+                onSubmit={() => recordStatus(doctor.id)}
+                onEdit={() => {
+                  setEditingDoctor(doctor);
+                  setEditorOpen(true);
+                }}
+              />
+            ))}
+          </Table>
+        )}
       </Card>
 
       {activeClinicId ? (
         <div style={{ marginTop: "var(--space-section)" }}>
           <StatusHistory timezone={timezone} />
         </div>
+      ) : null}
+
+      {editorOpen ? (
+        <DoctorEditor
+          doctor={editingDoctor}
+          onClose={() => setEditorOpen(false)}
+          onSaved={reload}
+        />
       ) : null}
     </div>
   );

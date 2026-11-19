@@ -160,6 +160,16 @@ class MembershipCreateSerializer(serializers.Serializer):
 # Doctors
 # ---------------------------------------------------------------------------
 class DoctorSerializer(serializers.ModelSerializer):
+    """Doctors with an auto-generated, clinic-unique slug.
+
+    The slug used to be read-only without ever being generated. That meant the
+    first doctor got an empty slug and every later one violated the unique
+    ``(clinic, slug)`` constraint -- which is why newly added doctors never
+    showed up. The slug is now derived from the name and made unique per clinic.
+    """
+
+    slug = serializers.SlugField(max_length=120, required=False, allow_blank=True)
+
     class Meta:
         model = Doctor
         fields = [
@@ -174,7 +184,34 @@ class DoctorSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "slug", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def _unique_slug(self, name: str, clinic, exclude_pk=None) -> str:
+        from django.utils.text import slugify
+
+        base = slugify(name) or "doctor"
+        slug = base
+        counter = 2
+        while (
+            Doctor.objects.filter(clinic=clinic, slug=slug)
+            .exclude(pk=exclude_pk)
+            .exists()
+        ):
+            slug = f"{base}-{counter}"
+            counter += 1
+        return slug
+
+    def create(self, validated_data):  # noqa: ANN003
+        clinic = validated_data.get("clinic") or self.context.get("clinic")
+        validated_data.setdefault("slug", self._unique_slug(validated_data["name"], clinic))
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):  # noqa: ANN003
+        if "name" in validated_data and not validated_data.get("slug"):
+            validated_data["slug"] = self._unique_slug(
+                validated_data["name"], instance.clinic, exclude_pk=instance.pk
+            )
+        return super().update(instance, validated_data)
 
 
 class DoctorScheduleSerializer(serializers.ModelSerializer):
@@ -427,11 +464,16 @@ class SlotSerializer(serializers.Serializer):
 # Conversations and tasks
 # ---------------------------------------------------------------------------
 class ConversationSerializer(serializers.ModelSerializer):
+    patient_name = serializers.CharField(source="patient.name", read_only=True, default="")
+    patient_phone = serializers.CharField(source="patient.phone", read_only=True, default="")
+
     class Meta:
         model = Conversation
         fields = [
             "id",
             "patient",
+            "patient_name",
+            "patient_phone",
             "channel",
             "provider_conversation_id",
             "status",

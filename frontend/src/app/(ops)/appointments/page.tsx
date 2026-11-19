@@ -25,7 +25,7 @@ import {
   Table,
   Textarea,
 } from "@/components/ui";
-import { formatDate, formatDateTime, formatTime } from "@/lib/format";
+import { formatDate, formatDateTime, formatTime, todayIso } from "@/lib/format";
 import type { Appointment, Doctor, Patient, Paginated, Slot } from "@/lib/types";
 import { useApiData } from "@/lib/use-api-data";
 
@@ -56,7 +56,7 @@ function BookModal({
   const [patientId, setPatientId] = useState("");
   const [patientPhone, setPatientPhone] = useState("");
   const [patientName, setPatientName] = useState("");
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(todayIso());
   const [slotIso, setSlotIso] = useState("");
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
@@ -201,7 +201,12 @@ function BookModal({
         ) : null}
 
         <Field label="Date">
-          <Input type="date" value={date} onChange={(event) => setDate(event.target.value)} />
+          <Input
+            type="date"
+            min={todayIso()}
+            value={date}
+            onChange={(event) => setDate(event.target.value)}
+          />
         </Field>
 
         <Field label="Time" hint="Only slots the backend reports as free are listed.">
@@ -340,6 +345,7 @@ function RescheduleModal({
         <Field label="New date">
           <Input
             type="date"
+            min={todayIso()}
             value={date}
             onChange={(event) => {
               setDate(event.target.value);

@@ -223,6 +223,8 @@ export interface CallLog {
 export interface Conversation {
   id: string;
   patient: string | null;
+  patient_name: string;
+  patient_phone: string;
   channel: string;
   provider_conversation_id: string;
   status: string;

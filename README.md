@@ -46,9 +46,15 @@ cp .env.example .env          # fill in what you need
 docker compose up --build
 ```
 
-The dashboard is on <http://localhost:3000>, the API on
+The back-office dashboard is on <http://localhost:3001>, the API on
 <http://localhost:8000/api/v1/>, and the schema explorer on
-<http://localhost:8000/api/docs/>.
+<http://localhost:8000/api/docs/>. There is no patient-facing website: patients
+book by messaging the clinic's WhatsApp number, and the assistant writes the
+appointment straight into this dashboard. Port 3000 is reserved for the
+self-hosted WAHA gateway; see `WAHA_INTEGRATION.md`.
+
+If you also run WAHA, use the unified runner from this repo root:
+`./start-all.sh start|status|logs|stop`.
 
 Load demo data to get a clinic with doctors, patients and appointments:
 
@@ -123,16 +129,16 @@ Two things have to line up:
 | Setting | Value |
 |---------|-------|
 | `CORS_ALLOW_HEADERS` (in `settings.py`) | must contain `x-clinic-id` |
-| `CORS_ALLOWED_ORIGINS` (in `.env`) | must contain the exact origin the browser shows, e.g. `http://localhost:3000` |
+| `CORS_ALLOWED_ORIGINS` (in `.env`) | must contain the exact origin the browser shows, e.g. `http://localhost:3001` |
 
-Note that `http://localhost:3000` and `http://127.0.0.1:3000` are
+Note that `http://localhost:3001` and `http://127.0.0.1:3001` are
 *different* origins to a browser. If the dashboard is open on one and the
 server allows the other, every request fails.
 
 Check it with:
 
 ```bash
-python ops/scripts/check_cors.py http://127.0.0.1:8000 http://localhost:3000
+python ops/scripts/check_cors.py http://127.0.0.1:8000 http://localhost:3001
 ```
 
 ---

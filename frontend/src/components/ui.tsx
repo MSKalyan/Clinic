@@ -5,7 +5,7 @@
  * Updated to use the Clinic design system (globals.css classes).
  */
 import type { ReactNode, ButtonHTMLAttributes, InputHTMLAttributes, LabelHTMLAttributes, SelectHTMLAttributes, TextareaHTMLAttributes } from "react";
-import { forwardRef } from "react";
+import { forwardRef, useEffect } from "react";
 
 export function Card({
   title,
@@ -325,13 +325,34 @@ export function Modal({
   children: ReactNode;
   action?: ReactNode;
 }) {
+  // Close on Escape, and stop the page behind the dialog from scrolling.
+  useEffect(() => {
+    if (!isOpen) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = previous;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   return (
     <>
       <div className="modal-backdrop" onClick={onClose} aria-hidden="true" />
-      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-        <div className="p-6 border-b border-slate-200 flex items-start justify-between gap-4">
+      <div
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="modal-title"
+        style={{ maxHeight: "calc(100vh - 2rem)", display: "flex", flexDirection: "column" }}
+      >
+        <div className="p-6 border-b border-slate-200 flex items-start justify-between gap-4" style={{ flexShrink: 0 }}>
           <h2 id="modal-title" className="card-title">{title}</h2>
           <button
             type="button"
@@ -344,9 +365,9 @@ export function Modal({
             </svg>
           </button>
         </div>
-        <div className="p-6">{children}</div>
+        <div className="p-6" style={{ overflowY: "auto", flex: 1 }}>{children}</div>
         {action && (
-          <div className="p-6 border-t border-slate-200 flex justify-end gap-3">
+          <div className="p-6 border-t border-slate-200 flex justify-end gap-3" style={{ flexShrink: 0 }}>
             {action}
           </div>
         )}

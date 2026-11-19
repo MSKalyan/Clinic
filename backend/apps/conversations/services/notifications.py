@@ -1,29 +1,35 @@
-"""Outbound notification dispatch with consent checks and idempotency."""
+"""Outbound notification dispatch with consent checks and idempotency.
+
+Writing the ``NotificationLog`` row is cheap and idempotent; talking to a
+provider is slow. The request path only does the former and queues the latter,
+so a slow WAHA/Meta API can never make the dashboard feel slow.
+"""
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import Any
 
+from django.conf import settings
 from django.db import IntegrityError, transaction
-from django.utils import timezone
 
+from apps.conversations.models import NotificationLog
 from apps.core.constants import ConsentPurpose, ConsentStatus, DeliveryStatus
 from apps.core.exceptions import ConsentRequired, OptedOut
-from apps.conversations.models import NotificationLog
 
 logger = logging.getLogger("apps.conversations.notifications")
 
 
 class NotificationService:
-    """Send transactional messages and record the delivery attempt."""
+    """Record transactional messages and hand delivery to a worker."""
 
     @staticmethod
-    def assert_can_contact(clinic, patient, channel: str, purpose: str) -> None:  # noqa: ANN001
+    def assert_can_contact(clinic, patient, channel: str, purpose: str) -> None:
         """Raise if the patient has not permitted this channel/purpose.
 
-        Transactional appointment messages (confirmations, reminders) are
-        treated as necessary communication, but an explicit opt-out or a
-        withdrawn consent always wins.
+        Transactional messages (welcome, confirmations, reminders) are
+        necessary communication, but an explicit opt-out or withdrawn consent
+        always wins.
         """
         if patient is None:
             raise ConsentRequired("No patient record for this message.")
@@ -63,12 +69,16 @@ class NotificationService:
         provider_message_id: str = "",
         payload: dict[str, Any] | None = None,
     ) -> NotificationLog:
-        """Record and dispatch a notification.
+        """Insert one idempotent notification row and queue its delivery.
 
-        The log row is written first (with a unique idempotency key) so a
-        retried job can never double-send.
+        A retry with the same key returns the existing row without dispatching
+        a second message.
         """
-        cls.assert_can_contact(clinic, patient, channel, purpose)
+        if patient is not None:
+            cls.assert_can_contact(clinic, patient, channel, purpose)
+        # A staff reply to an unlinked WhatsApp chat has no patient row; the
+        # view already checked that the sender is an authenticated clinic
+        # member, so consent is not applicable there.
         key = idempotency_key or f"{clinic.id}:{template_id}:{appointment.id if appointment else ''}"
 
         try:
@@ -84,6 +94,7 @@ class NotificationService:
                     idempotency_key=key,
                     delivery_status=DeliveryStatus.QUEUED,
                     attempt_count=1,
+                    provider_message_id=str(provider_message_id or "")[:200],
                 )
         except IntegrityError:
             existing = NotificationLog.objects.filter(idempotency_key=key).first()
@@ -91,29 +102,36 @@ class NotificationService:
                 return existing
             raise
 
-        try:
-            provider_message_id = cls._dispatch(
-                clinic=clinic,
-                patient=patient,
-                channel=channel,
-                template_id=template_id,
-                body=body,
-                appointment=appointment,
-                payload=payload or {},
-            )
-            log.provider_message_id = provider_message_id
-            log.delivery_status = DeliveryStatus.SENT
-            log.sent_at = timezone.now()
-            log.save(update_fields=["provider_message_id", "delivery_status", "sent_at"])
-        except Exception as exc:  # pragma: no cover - provider dependent
-            logger.warning("notification dispatch failed: %s", exc)
-            log.delivery_status = DeliveryStatus.FAILED
-            log.last_error = str(exc)[:2000]
-            log.save(update_fields=["delivery_status", "last_error"])
+        cls._queue(log, body, payload or {})
         return log
 
     @staticmethod
-    def _dispatch(
+    def _queue(log: NotificationLog, body: str, payload: dict[str, Any]) -> None:
+        if not getattr(settings, "AUTOMATED_MESSAGING_ENABLED", True):
+            logger.info("automated messaging paused; skipping notification %s", log.id)
+            return
+        from apps.conversations.tasks import dispatch_notification
+
+        args = (str(log.id), body, payload)
+        if getattr(settings, "MESSAGES_ASYNC", True):
+
+            def enqueue() -> None:
+                try:
+                    dispatch_notification.delay(*args)
+                except Exception:
+                    logger.exception("could not enqueue notification %s for delivery", log.id)
+                    NotificationService.mark_failed(log, "Could not enqueue delivery.")
+
+            transaction.on_commit(enqueue)
+        else:  # tests and single-process deployments
+            dispatch_notification(*args)
+            # The task loads its own row and marks it SENT; refresh the caller's
+            # instance so `send()` returns the real final state.
+            with contextlib.suppress(NotificationLog.DoesNotExist):
+                log.refresh_from_db()
+
+    @staticmethod
+    def dispatch(
         *,
         clinic,
         patient,
@@ -123,17 +141,26 @@ class NotificationService:
         appointment,
         payload: dict[str, Any],
     ) -> str:
-        """Hand the message to the configured provider adapter."""
+        """Call the configured provider adapter and return its message id."""
         from apps.integrations.providers import get_messaging_provider
 
         provider = get_messaging_provider(clinic, channel)
         if provider is None:
             raise RuntimeError(f"No messaging provider configured for channel {channel}.")
-        return provider.send_message(
-            clinic=clinic,
-            recipient_phone=patient.phone,
-            template_id=template_id,
-            body=body,
-            appointment=appointment,
-            payload=payload,
+        return str(
+            provider.send_message(
+                clinic=clinic,
+                recipient_phone=patient.phone,
+                template_id=template_id,
+                body=body,
+                appointment=appointment,
+                payload=payload,
+            )
+            or ""
         )
+
+    @staticmethod
+    def mark_failed(log: NotificationLog, error: str) -> None:
+        log.delivery_status = DeliveryStatus.FAILED
+        log.last_error = str(error)[:2000]
+        log.save(update_fields=["delivery_status", "last_error"])

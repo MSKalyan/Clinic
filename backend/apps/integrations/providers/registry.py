@@ -14,6 +14,7 @@ from django.conf import settings
 from apps.core.constants import Channel, ConnectionStatus, ProviderType
 from apps.integrations.providers.sarvam import SarvamVoiceAdapter
 from apps.integrations.providers.telephony import TelephonyAdapter
+from apps.integrations.providers.waha import WahaAdapter
 from apps.integrations.providers.whatsapp import WhatsAppCloudAdapter
 
 logger = logging.getLogger("apps.integrations.registry")
@@ -42,7 +43,7 @@ def resolve_secret(reference: str) -> dict[str, Any]:
     return {}
 
 
-def _connection(clinic, provider_type: str):  # noqa: ANN001
+def _connection(clinic, provider_type: str):
     from apps.tenancy.models import ProviderConnection
 
     return (
@@ -75,7 +76,7 @@ def _clinic_key(clinic, key: str, default: str = "") -> str:
     return default
 
 
-def get_voice_provider(clinic, provider: str = "sarvam"):  # noqa: ANN001
+def get_voice_provider(clinic, provider: str = "sarvam"):
     """Return the voice adapter for a clinic."""
     connection = _connection(clinic, ProviderType.VOICE)
     secret = resolve_secret(connection.secret_reference if connection else "")
@@ -89,30 +90,49 @@ def get_voice_provider(clinic, provider: str = "sarvam"):  # noqa: ANN001
     return None
 
 
-def get_messaging_provider(clinic, channel: str = Channel.WHATSAPP):  # noqa: ANN001
-    """Return the messaging adapter for a clinic and channel."""
+def get_messaging_provider(clinic, channel: str = Channel.WHATSAPP):
+    """Return the messaging adapter for a clinic and channel.
+
+    A clinic with its own Meta WhatsApp Cloud account keeps using it. When no
+    Cloud credentials are configured, the self-hosted WAHA session is the
+    WhatsApp provider for this deployment, so transactional messages (and
+    reminders) go through the same number that receives patient replies.
+    """
     if channel == Channel.WHATSAPP:
         connection = _connection(clinic, ProviderType.MESSAGING)
         secret = resolve_secret(connection.secret_reference if connection else "")
+        access_token = secret.get("access_token") or _clinic_key(
+            clinic, "whatsapp.access_token", settings.WHATSAPP_ACCESS_TOKEN
+        )
+        phone_number_id = secret.get("phone_number_id") or _clinic_key(
+            clinic, "whatsapp.phone_number_id", settings.WHATSAPP_PHONE_NUMBER_ID
+        )
+        if not (access_token and phone_number_id) and settings.WAHA_API_KEY:
+            return get_waha_adapter()
         return WhatsAppCloudAdapter(
             app_secret=secret.get("app_secret")
             or _clinic_key(clinic, "whatsapp.app_secret", settings.WHATSAPP_APP_SECRET),
-            access_token=secret.get("access_token")
-            or _clinic_key(clinic, "whatsapp.access_token", settings.WHATSAPP_ACCESS_TOKEN),
-            phone_number_id=secret.get("phone_number_id")
-            or _clinic_key(
-                clinic, "whatsapp.phone_number_id", settings.WHATSAPP_PHONE_NUMBER_ID
-            ),
+            access_token=access_token,
+            phone_number_id=phone_number_id,
         )
     return None
 
 
-def get_telephony_provider(clinic):  # noqa: ANN001
+def get_telephony_provider(clinic):
     connection = _connection(clinic, ProviderType.TELEPHONY)
     secret = resolve_secret(connection.secret_reference if connection else "")
     return TelephonyAdapter(
         auth_token=secret.get("auth_token")
         or _clinic_key(clinic, "telephony.auth_token", settings.TELEPHONY_AUTH_TOKEN)
+    )
+
+
+def get_waha_adapter() -> WahaAdapter:
+    """Return the WAHA webhook adapter from platform settings."""
+    return WahaAdapter(
+        webhook_secret=settings.WAHA_WEBHOOK_SECRET,
+        hmac_key=settings.WAHA_WEBHOOK_HMAC_KEY,
+        session=settings.WAHA_SESSION,
     )
 
 
@@ -138,4 +158,6 @@ def get_provider_for_webhook(provider: str, secret: str = ""):
         )
     if provider == "telephony":
         return TelephonyAdapter(auth_token=secret or settings.TELEPHONY_AUTH_TOKEN)
+    if provider == "waha":
+        return get_waha_adapter()
     return None

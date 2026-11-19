@@ -68,7 +68,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
-      CORS_ALLOWED_ORIGINS: '["http://localhost:3000","http://127.0.0.1:3000"]'
+      CORS_ALLOWED_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001"
       INTERNAL_SERVICE_TOKEN_PEPPER: ${INTERNAL_SERVICE_TOKEN_PEPPER:-change-me}
       SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:-}
       SARVAM_BASE_URL: ${SARVAM_BASE_URL:-https://api.sarvam.ai}
@@ -83,6 +83,14 @@ services:
       TELEPHONY_BASE_URL: ${TELEPHONY_BASE_URL:-}
       TELEPHONY_AUTH_TOKEN: ${TELEPHONY_AUTH_TOKEN:-}
       TELEPHONY_PROVIDER: ${TELEPHONY_PROVIDER:-stub}
+      # WAHA (self-hosted WhatsApp API) - shared network with the waha stack
+      WAHA_BASE_URL: ${WAHA_BASE_URL:-http://waha:3000}
+      WAHA_API_KEY: ${WAHA_API_KEY:-}
+      WAHA_SESSION: ${WAHA_SESSION:-session_01}
+      WAHA_CLINIC_SLUG: ${WAHA_CLINIC_SLUG:-}
+      WAHA_WEBHOOK_SECRET: ${WAHA_WEBHOOK_SECRET:-}
+      WAHA_WEBHOOK_HMAC_KEY: ${WAHA_WEBHOOK_HMAC_KEY:-}
+      WAHA_REQUEST_TIMEOUT_SECONDS: ${WAHA_REQUEST_TIMEOUT_SECONDS:-10}
     volumes:
       - ./backend:/app
       - ./backend/staticfiles:/app/staticfiles
@@ -132,6 +140,15 @@ services:
       TELEPHONY_BASE_URL: ${TELEPHONY_BASE_URL:-}
       TELEPHONY_AUTH_TOKEN: ${TELEPHONY_AUTH_TOKEN:-}
       TELEPHONY_PROVIDER: ${TELEPHONY_PROVIDER:-stub}
+      # The worker performs the actual WAHA sends, so it needs the same
+      # provider settings as the web process.
+      WAHA_BASE_URL: ${WAHA_BASE_URL:-http://waha:3000}
+      WAHA_API_KEY: ${WAHA_API_KEY:-}
+      WAHA_SESSION: ${WAHA_SESSION:-session_01}
+      WAHA_CLINIC_SLUG: ${WAHA_CLINIC_SLUG:-}
+      WAHA_WEBHOOK_SECRET: ${WAHA_WEBHOOK_SECRET:-}
+      WAHA_WEBHOOK_HMAC_KEY: ${WAHA_WEBHOOK_HMAC_KEY:-}
+      WAHA_REQUEST_TIMEOUT_SECONDS: ${WAHA_REQUEST_TIMEOUT_SECONDS:-10}
     volumes:
       - ./backend:/app
       - ./backend/media:/app/media
@@ -141,6 +158,8 @@ services:
       redis:
         condition: service_healthy
     networks: [clinic]
+    healthcheck:
+      disable: true
     command: >
       sh -c "celery -A config worker -l INFO --concurrency=2"
 
@@ -185,6 +204,8 @@ services:
       redis:
         condition: service_healthy
     networks: [clinic]
+    healthcheck:
+      disable: true
     command: >
       sh -c "celery -A config beat -l INFO --schedule=/tmp/celerybeat-schedule"
 
@@ -195,6 +216,7 @@ services:
     container_name: clinic-frontend
     environment:
       NEXT_PUBLIC_API_BASE_URL: http://localhost:8000/api/v1
+      NEXT_PUBLIC_WS_BASE_URL: ws://localhost:8000
       NEXT_TELEMETRY_DISABLED: "1"
     volumes:
       - ./frontend:/app
@@ -204,7 +226,8 @@ services:
       - /app/node_modules/.pnpm
       - /app/.next-dev
     ports:
-      - "3000:3000"
+      # WAHA owns host port 3000; the dashboard is served on 3001.
+      - "3001:3000"
     depends_on:
       - backend
     networks: [clinic]
@@ -215,5 +238,9 @@ volumes:
   redis_data:
 
 networks:
+  # Shared with the WAHA stack so WAHA can POST to http://backend:8000 and
+  # Django can reach http://waha:3000 without going through the host.
+  # Create once with: docker network create clinic-waha-net
   clinic:
-    driver: bridge
+    name: clinic-waha-net
+    external: true

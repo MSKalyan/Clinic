@@ -38,6 +38,25 @@ logger = logging.getLogger("apps.appointments.booking")
 _REFERENCE_ALPHABET = string.ascii_uppercase + string.digits
 
 
+def _notify_whatsapp(
+    appointment: Appointment,
+    kind: str,
+    *,
+    reason: str = "",
+    event_id: str | None = None,
+) -> None:
+    """Queue a patient text after commit; messaging can never fail a booking."""
+    from apps.appointments.services.appointment_messages import send_appointment_message
+    from apps.realtime.broadcast import dashboard_changed
+
+    try:
+        send_appointment_message(appointment, kind, reason=reason, event_id=event_id)
+    except Exception:  # pragma: no cover - defensive; the service already swallows errors
+        logger.exception("WhatsApp %s notification failed for %s", kind, appointment.reference)
+    finally:
+        dashboard_changed(appointment.clinic_id, "appointment", reference=appointment.reference)
+
+
 def generate_reference() -> str:
     """A short, human-readable appointment reference."""
     while True:
@@ -109,7 +128,7 @@ class BookingService:
                     reference=reference or generate_reference(),
                     notes=notes[:2000],
                 )
-                cls._record_event(
+                event = cls._record_event(
                     clinic=clinic,
                     appointment=appointment,
                     event_type="booked",
@@ -135,6 +154,11 @@ class BookingService:
                     },
                 )
                 cls._remember(idempotency_key, clinic, "booking", appointment)
+                transaction.on_commit(
+                    lambda appt=appointment, eid=str(event.id): _notify_whatsapp(
+                        appt, "booked", event_id=eid
+                    )
+                )
         except IntegrityError as exc:
             # The exclusion constraint fired: someone else took the slot.
             logger.info("booking conflict for doctor=%s start=%s: %s", doctor.id, start_at, exc)
@@ -210,7 +234,7 @@ class BookingService:
                     locked.notes = notes[:2000]
                 locked.save(update_fields=["start_at", "end_at", "notes", "updated_at"])
 
-                cls._record_event(
+                event = cls._record_event(
                     clinic=clinic,
                     appointment=locked,
                     event_type="rescheduled",
@@ -233,6 +257,11 @@ class BookingService:
                         "previous_start_at": previous_start.isoformat(),
                         "start_at": new_start_at.isoformat(),
                     },
+                )
+                transaction.on_commit(
+                    lambda appt=locked, eid=str(event.id): _notify_whatsapp(
+                        appt, "rescheduled", event_id=eid
+                    )
                 )
         except IntegrityError as exc:
             raise SlotUnavailable(
@@ -294,7 +323,7 @@ class BookingService:
                 ]
             )
 
-            cls._record_event(
+            event = cls._record_event(
                 clinic=clinic,
                 appointment=locked,
                 event_type="cancelled",
@@ -314,6 +343,11 @@ class BookingService:
                     "reason": locked.cancellation_reason,
                 },
             )
+            transaction.on_commit(
+                lambda appt=locked, eid=str(event.id): _notify_whatsapp(
+                    appt, "cancelled", reason=appt.cancellation_reason, event_id=eid
+                )
+            )
         return locked
 
     # ------------------------------------------------------------------
@@ -328,8 +362,8 @@ class BookingService:
         actor_type: str,
         actor,
         payload: dict[str, Any],
-    ) -> None:
-        AppointmentEvent.objects.create(
+    ) -> AppointmentEvent:
+        return AppointmentEvent.objects.create(
             clinic=clinic,
             appointment=appointment,
             event_type=event_type,

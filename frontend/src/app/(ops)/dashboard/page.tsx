@@ -1,5 +1,6 @@
 "use client";
 
+import { useCallback } from "react";
 import Link from "next/link";
 
 import { useAuth } from "@/components/auth-provider";
@@ -19,12 +20,13 @@ import {
 } from "@/lib/format";
 import type { Appointment, DashboardSummary, FollowUpTask, Paginated } from "@/lib/types";
 import { useApiData } from "@/lib/use-api-data";
+import { useClinicSocket } from "@/lib/use-clinic-socket";
 
 export default function DashboardPage() {
   const { activeClinic } = useAuth();
   const timezone = activeClinic?.timezone;
 
-  const { data, error, loading, reload } = useApiData<{
+  const { data, error, loading, refreshing, reload } = useApiData<{
     summary: DashboardSummary;
     appointments: Paginated<Appointment>;
     tasks: Paginated<FollowUpTask>;
@@ -43,8 +45,34 @@ export default function DashboardPage() {
     return { summary, appointments, tasks };
   });
 
-  if (loading) return <Spinner label="Loading today…" size="lg" />;
-  if (error) return <ErrorBanner error={error} />;
+  // Debounce live reloads so a burst of events (e.g. several messages) causes
+  // one re-fetch, not a stampede.
+  const reloadTimer = useCallback(() => {
+    // The hook's reload is stable; a small timeout coalesces bursts.
+    window.clearTimeout((window as unknown as { _dashReload?: number })._dashReload);
+    (window as unknown as { _dashReload?: number })._dashReload = window.setTimeout(
+      reload,
+      250,
+    );
+  }, [reload]);
+
+  const onEvent = useCallback(
+    (event: { event: string }) => {
+      if (
+        event.event === "dashboard.changed" ||
+        event.event === "conversation.message" ||
+        event.event === "conversation.new"
+      ) {
+        reloadTimer();
+      }
+    },
+    [reloadTimer],
+  );
+
+  const { connected } = useClinicSocket(onEvent);
+
+  if (loading && !data) return <Spinner label="Loading today…" size="lg" />;
+  if (error && !data) return <ErrorBanner error={error} />;
   if (!data) return null;
 
   const { summary, appointments, tasks } = data;
@@ -57,6 +85,17 @@ export default function DashboardPage() {
           <p className="page-subtitle">
             {summary.clinic.name} · {summary.clinic.timezone} · generated{" "}
             {formatTime(summary.generated_at, timezone)}
+            <span className="ml-2 inline-flex items-center gap-1 text-caption">
+              <span
+                className="inline-block h-2 w-2 rounded-full"
+                style={{
+                  backgroundColor: connected ? "var(--color-success)" : "var(--color-text-muted)",
+                }}
+                aria-hidden
+              />
+              {connected ? "Live" : "Connecting…"}
+              {refreshing ? " · updating" : ""}
+            </span>
           </p>
         </div>
         <Button variant="secondary" onClick={reload} size="sm">
@@ -134,7 +173,9 @@ export default function DashboardPage() {
               <tr key={doctor.doctor_id}>
                 <td className="px-4 py-3">
                   <p className="font-medium" style={{ color: "var(--color-text-primary)" }}>{doctor.doctor_name}</p>
-                  <p className="text-caption" style={{ color: "var(--color-text-muted)" }}>{doctor.specialization}</p>
+                </td>
+                <td className="px-4 py-3" style={{ color: "var(--color-text-secondary)" }}>
+                  {doctor.specialization || "—"}
                 </td>
                 <td className="px-4 py-3">
                   <StatusBadge status={doctor.status} isStale={doctor.is_stale} />

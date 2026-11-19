@@ -1,12 +1,13 @@
 """Doctor, schedule and availability endpoints."""
 from __future__ import annotations
 
-from rest_framework import status, viewsets
+from django.db.models import Q
+from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from apps.api.v1.mixins import TenantScopedViewSet
-from apps.api.v1.permissions import IsClinicAdmin, IsClinicMember, IsStaffMember
+from apps.api.v1.permissions import IsClinicAdmin, IsStaffMember
 from apps.api.v1.serializers import (
     DoctorAvailabilitySerializer,
     DoctorScheduleExceptionSerializer,
@@ -26,6 +27,7 @@ from apps.doctors.models import (
     DoctorStatusCurrent,
     DoctorStatusEvent,
 )
+from apps.doctors.services.schedule import seed_default_schedule
 from apps.doctors.services.status import DoctorStatusService
 
 
@@ -56,6 +58,9 @@ class DoctorViewSet(TenantScopedViewSet):
 
     def perform_create(self, serializer) -> None:
         doctor = serializer.save(clinic=self.get_clinic())
+        # Without a schedule the doctor has zero bookable slots. Give them the
+        # clinic's default working hours so they can be booked immediately.
+        seed_default_schedule(doctor)
         record_audit(
             action=AuditAction.CREATE,
             resource_type="doctor",
@@ -66,14 +71,14 @@ class DoctorViewSet(TenantScopedViewSet):
         )
 
     @action(detail=True, methods=["get"], url_path="availability")
-    def availability(self, request, pk=None):  # noqa: ANN001
+    def availability(self, request, pk=None):
         """The effective availability of a doctor right now."""
         doctor = self.get_object()
         snapshot = DoctorStatusService.get_current(doctor)
         return Response(DoctorAvailabilitySerializer(snapshot.as_dict()).data)
 
     @action(detail=True, methods=["get", "post"], url_path="availability-events")
-    def availability_events(self, request, pk=None):  # noqa: ANN001
+    def availability_events(self, request, pk=None):
         """The immutable history of status changes."""
         doctor = self.get_object()
         if request.method == "POST":
@@ -137,7 +142,7 @@ class DoctorViewSet(TenantScopedViewSet):
         return Response(DoctorStatusEventSerializer(events, many=True).data)
 
     @action(detail=True, methods=["get"], url_path="status-history")
-    def status_history(self, request, pk=None):  # noqa: ANN001
+    def status_history(self, request, pk=None):
         doctor = self.get_object()
         events = DoctorStatusEvent.objects.filter(clinic=doctor.clinic_id, doctor=doctor)
         current = DoctorStatusCurrent.objects.filter(
@@ -153,7 +158,7 @@ class DoctorViewSet(TenantScopedViewSet):
         )
 
     @action(detail=True, methods=["get", "post"], url_path="schedules")
-    def schedules(self, request, pk=None):  # noqa: ANN001
+    def schedules(self, request, pk=None):
         doctor = self.get_object()
         if request.method == "POST":
             if getattr(request, "clinic_role", "") != Role.CLINIC_ADMIN.value:
@@ -174,7 +179,7 @@ class DoctorViewSet(TenantScopedViewSet):
         return Response(DoctorScheduleSerializer(schedules, many=True).data)
 
     @action(detail=True, methods=["get", "post"], url_path="schedule-exceptions")
-    def schedule_exceptions(self, request, pk=None):  # noqa: ANN001
+    def schedule_exceptions(self, request, pk=None):
         doctor = self.get_object()
         if request.method == "POST":
             if getattr(request, "clinic_role", "") != Role.CLINIC_ADMIN.value:

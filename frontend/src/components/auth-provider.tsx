@@ -28,6 +28,8 @@ interface AuthState {
 
 interface AuthContextValue extends AuthState {
   api: ApiClient;
+  /** Current access token, used to authenticate the live WebSocket. */
+  accessToken: string | null;
   login: (email: string, password: string) => Promise<void>;
   logout: () => void;
   switchClinic: (clinicId: string) => void;
@@ -269,6 +271,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       activeClinic,
       status,
       api,
+      accessToken: tokens?.access ?? null,
       login,
       logout,
       switchClinic,
@@ -282,6 +285,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       activeClinic,
       status,
       api,
+      tokens,
       login,
       logout,
       switchClinic,

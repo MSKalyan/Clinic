@@ -101,9 +101,10 @@ function Shell({ children }: { children: React.ReactNode }) {
             )}
           </main>
         ) : (
-          <main className="flex-1 p-5 md:p-8">{children}</main>
+          <main className="flex-1 p-5 pb-24 md:p-8">{children}</main>
         )}
       </div>
+      {activeClinicId ? <Nav variant="mobile" /> : null}
     </div>
   );
 }

@@ -51,6 +51,23 @@ env = environ.Env(
     TELEPHONY_BASE_URL=(str, ""),
     TELEPHONY_AUTH_TOKEN=(str, ""),
     TELEPHONY_PROVIDER=(str, "stub"),
+    # WAHA (self-hosted WhatsApp HTTP API) -- local development integration.
+    # In Docker the WAHA service is reachable by its compose service alias;
+    # when Django is run on the host, use http://localhost:3000 instead.
+    WAHA_BASE_URL=(str, "http://waha:3000"),
+    WAHA_API_KEY=(str, ""),
+    WAHA_SESSION=(str, "session_01"),
+    # Which clinic this WhatsApp number belongs to. Used for senders we have
+    # not seen before; an existing patient's own clinic always takes priority.
+    WAHA_CLINIC_SLUG=(str, ""),
+    # Emergency stop: when false, no automated WhatsApp/Meta message is sent
+    # or queued. Set AUTOMATED_MESSAGING_ENABLED=false in .env to pause all
+    # outbound automation without stopping services.
+    AUTOMATED_MESSAGING_ENABLED=(bool, True),
+    WAHA_WEBHOOK_SECRET=(str, ""),
+    WAHA_WEBHOOK_HMAC_KEY=(str, ""),
+    WAHA_REQUEST_TIMEOUT_SECONDS=(float, 10.0),
+    WAHA_MAX_TEXT_LENGTH=(int, 4096),
 )
 
 SECRET_KEY = env("DJANGO_SECRET_KEY", default="insecure-dev-secret-key-change-me")
@@ -58,6 +75,10 @@ DEBUG = env("DJANGO_DEBUG")
 ALLOWED_HOSTS = env("DJANGO_ALLOWED_HOSTS")
 
 INSTALLED_APPS = [
+    # daphne's ASGI `runserver` must precede staticfiles so development serves
+    # WebSockets as well as HTTP.
+    "daphne",
+    "channels",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -80,6 +101,7 @@ INSTALLED_APPS = [
     "apps.integrations",
     "apps.ai_tools",
     "apps.usage",
+    "apps.realtime",
 ]
 
 MIDDLEWARE = [
@@ -115,6 +137,15 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
+
+#: WebSockets share the Redis instance used by Celery and the cache. A channel
+#: layer lets every gunicorn/ASGI worker reach every connected browser.
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {"hosts": [env("REDIS_URL")]},
+    }
+}
 
 DATABASES = {
     "default": {
@@ -362,6 +393,61 @@ WHATSAPP_VERIFY_TOKEN = env("WHATSAPP_VERIFY_TOKEN")
 TELEPHONY_BASE_URL = env("TELEPHONY_BASE_URL")
 TELEPHONY_AUTH_TOKEN = env("TELEPHONY_AUTH_TOKEN")
 TELEPHONY_PROVIDER = env("TELEPHONY_PROVIDER")
+
+# --- WAHA (self-hosted WhatsApp HTTP API) ---------------------------------
+# Credentials stay on the backend; the webhook secret and HMAC key are never
+# exposed through an API response or to the frontend.
+WAHA_BASE_URL = env("WAHA_BASE_URL").rstrip("/")
+WAHA_API_KEY = env("WAHA_API_KEY")
+WAHA_SESSION = env("WAHA_SESSION")
+WAHA_CLINIC_SLUG = env("WAHA_CLINIC_SLUG")
+AUTOMATED_MESSAGING_ENABLED = env("AUTOMATED_MESSAGING_ENABLED")
+WAHA_WEBHOOK_SECRET = env("WAHA_WEBHOOK_SECRET")
+WAHA_WEBHOOK_HMAC_KEY = env("WAHA_WEBHOOK_HMAC_KEY")
+WAHA_REQUEST_TIMEOUT_SECONDS = env("WAHA_REQUEST_TIMEOUT_SECONDS")
+WAHA_MAX_TEXT_LENGTH = env("WAHA_MAX_TEXT_LENGTH")
+
+#: Transactional WhatsApp messages sent on appointment lifecycle changes.
+#: Placeholders are filled by ``apps.appointments.services.appointment_messages``.
+WAHA_APPOINTMENT_MESSAGES: dict[str, str] = {
+    "booked": (
+        "Hi {patient_name}, your appointment at {clinic_name} is confirmed.\n"
+        "Reference: {reference}\n"
+        "Doctor: {doctor_name}\n"
+        "When: {when} ({timezone})\n"
+        "Reply to this message if you need to reschedule or cancel.\n"
+        "Thank you."
+    ),
+    "rescheduled": (
+        "Hi {patient_name}, your appointment at {clinic_name} has been "
+        "rescheduled.\n"
+        "Reference: {reference}\n"
+        "Doctor: {doctor_name}\n"
+        "New time: {when} ({timezone})\n"
+        "Reply to this message if you need to make another change.\n"
+        "Thank you."
+    ),
+    "cancelled": (
+        "Hi {patient_name}, your appointment at {clinic_name} "
+        "({reference}) with {doctor_name} scheduled for {when} has been "
+        "cancelled. Reply to this message to book a new time.\n"
+        "Thank you."
+    ),
+}
+
+#: All patient-facing templates live in one registry. Values here override the
+#: defaults in ``apps.conversations.services.templates.DEFAULT_TEMPLATES``.
+MESSAGE_TEMPLATES: dict[str, str] = {
+    "welcome": (
+        "Hi {patient_name}, welcome to {clinic_name}! "
+        "Your details are saved. You can reply to this message any time if you "
+        "need help with appointments or have a question for our team."
+    ),
+}
+
+#: Dispatching a provider HTTP call inside a request is the main source of UI
+#: lag. When true, delivery runs in Celery and the request only writes a row.
+MESSAGES_ASYNC = True
 
 LOGGING = {
     "version": 1,

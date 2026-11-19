@@ -7,6 +7,26 @@
  */
 import type { AppointmentStatus, DoctorStatus } from "./types";
 
+/** Today's date as YYYY-MM-DD, in a clinic's timezone (or the browser's). */
+export function todayIso(timezone?: string): string {
+  if (timezone) {
+    try {
+      return new Intl.DateTimeFormat("en-CA", {
+        timeZone: timezone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(new Date());
+    } catch {
+      // Unknown timezone -- fall back to the browser's local date.
+    }
+  }
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60000)
+    .toISOString()
+    .slice(0, 10);
+}
+
 export function formatTime(iso: string | null | undefined, timezone?: string): string {
   if (!iso) return "—";
   const date = new Date(iso);
